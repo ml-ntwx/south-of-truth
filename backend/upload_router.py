@@ -97,7 +97,8 @@ def _get_session(session_id: str) -> dict:
         "processing_time_ms": row[8],
         "results": json.loads(row[9]) if row[9] else {},
         "error": row[10],
-        "extracted_data": json.loads(row[11]) if row[11] else {}
+        "extracted_data": json.loads(row[11]) if row[11] else {},
+        "document_type": row[12] if len(row) > 12 else "unknown"
     }
 
 
