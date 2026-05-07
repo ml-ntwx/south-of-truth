@@ -1,0 +1,14 @@
+.env
+.env.*
+*.db
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+uploads/
+*.pdf
+.DS_Store
+static/
+frontend.html
+test_gemini.py

@@ -1,0 +1,427 @@
+"""
+Results Router — /results + /export/{format}/{session_id}
+Supports: CSV, XML, RAW (JSON), TXT, MD, PDF
+"""
+import csv
+import io
+import json
+import sqlite3
+import xml.etree.ElementTree as ET
+import os
+import logging
+from datetime import datetime
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="", tags=["results"])
+DB_PATH = os.path.join(os.path.dirname(__file__), "..", "south_of_truth.db")
+
+def _db_get(session_id: str):
+    if not os.path.exists(DB_PATH):
+        return None
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "session_id": row[0], "stage": row[1], "filename": row[2],
+        "page_count": row[3], "current_page": row[4], "ocr_provider": row[5],
+        "started_at": row[6], "completed_at": row[7],
+        "processing_time_ms": row[8],
+        "results": json.loads(row[9]) if row[9] else {},
+        "error": row[10],
+        "extracted_data": json.loads(row[11]) if row[11] else {}
+    }
+
+@router.get("/results/{session_id}")
+async def get_results(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    if session.get("stage") not in ("completed", "failed"):
+        return JSONResponse({"session_id": session_id, "stage": session["stage"], "message": "Processing not complete."}, status_code=202)
+    return session
+
+@router.get("/export/csv/{session_id}")
+async def export_csv(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    data = session.get("extracted_data", {})
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Field", "Value", "Source"])
+    def flatten(prefix, obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                flatten(f"{prefix}.{k}" if prefix else k, v)
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                flatten(f"{prefix}[{i}]", v)
+        else:
+            writer.writerow([prefix, str(obj), "extracted"])
+    flatten("", data)
+    output.seek(0)
+    return PlainTextResponse(output.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=south-of-truth-{session_id[:8]}.csv"})
+
+@router.get("/export/xml/{session_id}")
+async def export_xml(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    data = session.get("extracted_data", {})
+    root = ET.Element("PropertyDocument")
+    root.set("session_id", session_id)
+    root.set("stage", session.get("stage", "unknown"))
+    root.set("exported", datetime.utcnow().isoformat())
+    def build_xml(parent, obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                child = ET.SubElement(parent, k.replace(" ", "_").replace("-", "_"))
+                build_xml(child, v)
+        elif isinstance(obj, list):
+            for v in obj:
+                item = ET.SubElement(parent, "Item")
+                build_xml(item, v)
+        else:
+            parent.text = str(obj)
+    build_xml(root, data)
+    xml_str = ET.tostring(root, encoding="unicode")
+    return PlainTextResponse(
+        f'<?xml version="1.0" encoding="UTF-8"?>\n{xml_str}',
+        media_type="application/xml",
+        headers={"Content-Disposition": f"attachment; filename=south-of-truth-{session_id[:8]}.xml"})
+
+@router.get("/export/raw/{session_id}")
+async def export_raw(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    data = {
+        "_meta": {
+            "session_id": session_id,
+            "exported_at": datetime.utcnow().isoformat(),
+            "stage": session.get("stage"),
+            "ocr_provider": session.get("ocr_provider"),
+            "processing_time_ms": session.get("processing_time_ms"),
+            "filename": session.get("filename")
+        },
+        "extracted_data": session.get("extracted_data", {}),
+        "validation": (session.get("results") or {}).get("validation", []),
+        "summary": (session.get("results") or {}).get("summary", {})
+    }
+    return PlainTextResponse(
+        json.dumps(data, indent=2, default=str),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename=south-of-truth-{session_id[:8]}.json"})
+
+@router.get("/export/txt/{session_id}")
+async def export_txt(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    e = session.get("extracted_data", {})
+    v = (session.get("results") or {}).get("validation", [])
+    s = (session.get("results") or {}).get("summary", {})
+    lines = []
+    lines.append("=" * 60)
+    lines.append("  SOUTH OF TRUTH -- PROPERTY DOCUMENT VERIFICATION REPORT")
+    lines.append("=" * 60)
+    lines.append(f"  Session ID: {session_id}")
+    lines.append(f"  Exported:   {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    lines.append(f"  Provider:   {session.get('ocr_provider', 'unknown')}")
+    lines.append(f"  Filename:   {session.get('filename', 'unknown')}")
+    lines.append("")
+    lines.append("-" * 60)
+    lines.append("  EXTRACTED DATA")
+    lines.append("-" * 60)
+    lines.append(f"  Document Type:      {e.get('document_type') or 'Not detected'}")
+    lines.append(f"  Title Reference:    {e.get('title_reference') or 'Not detected'}")
+    lines.append(f"  ABN:                {e.get('abn') or 'Not detected'}")
+    lines.append(f"  Confidence:         {(e.get('ocr_confidence') or 0) * 100:.0f}%")
+    lines.append("")
+    lines.append("  PROPRIETOR:")
+    prop = e.get("registered_proprietor", {})
+    names = prop.get("names", [])
+    lines.append(f"    Names:            {', '.join(names) if names else 'Not detected'}")
+    lines.append(f"    Address:          {prop.get('address') or 'Not detected'}")
+    lines.append(f"    Tenancy:          {prop.get('tenancy') or 'Not detected'}")
+    lines.append("")
+    lines.append("  PROPERTY:")
+    pr = e.get("property", {})
+    lines.append(f"    Address:          {pr.get('address') or 'Not detected'}")
+    lines.append(f"    Lot:              {pr.get('lot') or 'Not detected'}")
+    lines.append(f"    Plan:             {pr.get('plan') or 'Not detected'}")
+    lines.append(f"    LGA:              {pr.get('lga') or 'Not detected'}")
+    lines.append(f"    State:            {pr.get('state') or 'Not detected'}")
+    lines.append("")
+    enc = e.get("encumbrances", [])
+    if enc:
+        lines.append("  ENCUMBRANCES:")
+        for en in enc:
+            lines.append(f"    - {en.get('type', 'Unknown')}: {en.get('to', '')} ({en.get('amount', '')})")
+    else:
+        lines.append("  Encumbrances:       None detected")
+    lines.append("")
+    lines.append("-" * 60)
+    lines.append("  VALIDATION RESULTS")
+    lines.append("-" * 60)
+    if not v:
+        lines.append("  All checks passed")
+    else:
+        for item in v:
+            icon = "OK" if item["severity"] == "ok" else "ERR" if item["severity"] == "error" else "WARN"
+            lines.append(f"  [{icon}] {item['field']}: {item['message']}")
+    lines.append("")
+    lines.append("-" * 60)
+    lines.append("  SUMMARY")
+    lines.append("-" * 60)
+    lines.append(f"  Total checks:       {s.get('total_checks', 0)}")
+    lines.append(f"  Passed:             {s.get('passed', 0)}")
+    lines.append(f"  Errors:             {s.get('errors', 0)}")
+    lines.append(f"  Warnings:           {s.get('warnings', 0)}")
+    lines.append(f"  Valid:              {'Yes' if s.get('is_valid') else 'No'}")
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("  END OF REPORT")
+    lines.append("=" * 60)
+    return PlainTextResponse(
+        "\n".join(lines),
+        media_type="text/plain",
+        headers={"Content-Disposition": f"attachment; filename=south-of-truth-{session_id[:8]}.txt"})
+
+@router.get("/export/md/{session_id}")
+async def export_md(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    e = session.get("extracted_data", {})
+    v = (session.get("results") or {}).get("validation", [])
+    s = (session.get("results") or {}).get("summary", {})
+
+    enc = e.get("encumbrances", [])
+    enc_rows = ""
+    if enc:
+        enc_rows = "| Type | Registered Number | To | Amount | Date |\n"
+        enc_rows += "|:-----|:------------------|:---|:-------|:-----|\n"
+        for en in enc:
+            enc_rows += f"| {en.get('type','')} | {en.get('registered_number','')} | {en.get('to','')} | {en.get('amount','')} | {en.get('registered_date','')} |\n"
+    else:
+        enc_rows = "*None detected*\n"
+
+    validation_rows = ""
+    if not v:
+        validation_rows = "**All checks passed**\n"
+    else:
+        for item in v:
+            icon = "OK" if item["severity"] == "ok" else "ERR" if item["severity"] == "error" else "WARN"
+            validation_rows += f"**[{icon}] {item['field']}**: {item['message']}\n\n"
+
+    md = f"""# Property Document Verification Report
+
+> **South of Truth** -- Automated property document intelligence
+
+| | |
+|:---|:---|
+| **Session ID** | `{session_id}` |
+| **Exported** | {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} |
+| **OCR Provider** | `{session.get('ocr_provider', 'unknown')}` |
+| **Original File** | `{session.get('filename', 'unknown')}` |
+| **Processing Time** | {session.get('processing_time_ms', 0)}ms |
+
+---
+
+## Extracted Data
+
+### Document
+
+| Field | Value |
+|:------|:------|
+| **Document Type** | {e.get('document_type') or '*Not detected*'} |
+| **Title Reference** | `{e.get('title_reference') or 'N/A'}` |
+| **ABN** | {e.get('abn') or 'N/A'} |
+| **Confidence** | {(e.get('ocr_confidence') or 0) * 100:.0f}% |
+
+### Registered Proprietor
+
+| Field | Value |
+|:------|:------|
+| **Names** | {', '.join(e.get('registered_proprietor', {}).get('names', [])) or '*Not detected*'} |
+| **Address** | {e.get('registered_proprietor', {}).get('address') or 'N/A'} |
+| **Tenancy** | {e.get('registered_proprietor', {}).get('tenancy') or 'N/A'} |
+
+### Property
+
+| Field | Value |
+|:------|:------|
+| **Address** | {e.get('property', {}).get('address') or '*Not detected*'} |
+| **Lot** | {e.get('property', {}).get('lot') or 'N/A'} |
+| **Plan** | {e.get('property', {}).get('plan') or 'N/A'} |
+| **LGA** | {e.get('property', {}).get('lga') or 'N/A'} |
+| **State** | {e.get('property', {}).get('state') or 'N/A'} |
+
+### Encumbrances
+{enc_rows}
+---
+
+## Validation Results
+
+{validation_rows}
+---
+
+## Summary
+
+| Metric | Count |
+|:-------|------:|
+| Total Checks | {s.get('total_checks', 0)} |
+| Passed | {s.get('passed', 0)} |
+| Errors | {s.get('errors', 0)} |
+| Warnings | {s.get('warnings', 0)} |
+| **Valid** | **{'Yes' if s.get('is_valid') else 'No'}** |
+
+---
+
+*This report was generated automatically by South of Truth and should be verified by a licensed conveyancer or legal professional.*
+"""
+    return PlainTextResponse(
+        md, media_type="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename=south-of-truth-{session_id[:8]}.md"})
+
+@router.get("/export/pdf/{session_id}")
+async def export_pdf(session_id: str):
+    session = _db_get(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    e = session.get("extracted_data", {})
+    v = (session.get("results") or {}).get("validation", [])
+    s = (session.get("results") or {}).get("summary", {})
+    try:
+        from fpdf import FPDF
+    except ImportError:
+        raise HTTPException(500, "PDF export requires fpdf2. Install: pip install fpdf2")
+
+    class SOTPDF(FPDF):
+        def header(self):
+            self.set_font("Helvetica", "B", 16)
+            self.set_text_color(201, 169, 110)
+            self.cell(0, 10, "South of Truth", ln=True, align="C")
+            self.set_font("Helvetica", "", 10)
+            self.set_text_color(100, 100, 110)
+            self.cell(0, 6, "Property Document Verification Report", ln=True, align="C")
+            self.ln(2)
+            self.set_draw_color(201, 169, 110)
+            self.line(10, self.get_y(), 200, self.get_y())
+            self.ln(5)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("Helvetica", "I", 8)
+            self.set_text_color(150, 150, 160)
+            self.cell(0, 10, f"Page {self.page_no()} | Session: {session_id[:8]}... | {datetime.utcnow().strftime('%Y-%m-%d')}", align="C")
+
+    pdf = SOTPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "", 10)
+
+    # Meta section
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(40, 40, 50)
+    pdf.cell(0, 8, "Document Information", ln=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(80, 80, 90)
+    pdf.cell(50, 6, "Session ID:", 0)
+    pdf.cell(0, 6, session_id, ln=True)
+    pdf.cell(50, 6, "Exported:", 0)
+    pdf.cell(0, 6, datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"), ln=True)
+    pdf.cell(50, 6, "OCR Provider:", 0)
+    pdf.cell(0, 6, session.get("ocr_provider", "unknown"), ln=True)
+    pdf.cell(50, 6, "Original File:", 0)
+    pdf.cell(0, 6, session.get("filename", "unknown"), ln=True)
+    pdf.ln(5)
+
+    # Extracted data
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(40, 40, 50)
+    pdf.cell(0, 8, "Extracted Data", ln=True)
+
+    def row(label, value):
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(100, 100, 110)
+        pdf.cell(50, 7, label, 0)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(40, 40, 50)
+        pdf.cell(0, 7, str(value) if value else "Not detected", ln=True)
+
+    row("Document Type:", e.get("document_type"))
+    row("Title Reference:", e.get("title_reference"))
+    row("ABN:", e.get("abn"))
+    row("Confidence:", f"{(e.get('ocr_confidence') or 0) * 100:.0f}%")
+    pdf.ln(3)
+
+    # Proprietor
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(201, 169, 110)
+    pdf.cell(0, 7, "Registered Proprietor", ln=True)
+    prop = e.get("registered_proprietor", {})
+    row("Names:", ", ".join(prop.get("names", [])) if prop.get("names") else None)
+    row("Address:", prop.get("address"))
+    row("Tenancy:", prop.get("tenancy"))
+    pdf.ln(3)
+
+    # Property
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.set_text_color(201, 169, 110)
+    pdf.cell(0, 7, "Property", ln=True)
+    pr = e.get("property", {})
+    row("Address:", pr.get("address"))
+    row("Lot:", pr.get("lot"))
+    row("Plan:", pr.get("plan"))
+    row("LGA:", pr.get("lga"))
+    row("State:", pr.get("state"))
+    pdf.ln(3)
+
+    # Validation
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(40, 40, 50)
+    pdf.cell(0, 8, "Validation Results", ln=True)
+    if not v:
+        pdf.set_text_color(74, 222, 128)
+        pdf.cell(0, 7, "All checks passed", ln=True)
+    else:
+        for item in v:
+            if item["severity"] == "ok":
+                pdf.set_text_color(74, 222, 128)
+                label = "OK"
+            elif item["severity"] == "error":
+                pdf.set_text_color(248, 113, 113)
+                label = "ERR"
+            else:
+                pdf.set_text_color(251, 191, 36)
+                label = "WARN"
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 7, f"[{label}] {item['field']}", ln=True)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(100, 100, 110)
+            pdf.cell(0, 6, f"   {item['message']}", ln=True)
+
+    pdf.ln(5)
+    pdf.set_draw_color(200, 200, 210)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(3)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(150, 150, 160)
+    pdf.multi_cell(0, 5, "This report was generated automatically by South of Truth and should be verified by a licensed conveyancer or legal professional.")
+
+    pdf_bytes = pdf.output()
+    if isinstance(pdf_bytes, bytearray):
+        pdf_bytes = bytes(pdf_bytes)
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=south-of-truth-{session_id[:8]}.pdf"})
