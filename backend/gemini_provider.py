@@ -7,6 +7,7 @@ import os
 import json
 import time
 import logging
+import asyncio
 from typing import Dict, Any
 
 from google import genai
@@ -59,13 +60,15 @@ class GeminiProvider(BaseOCRProvider):
 
         self.client = genai.Client(api_key=self.api_key)
 
-        # Try env var first, then fall back to known-stable models
+        # Default models for this API key
         env_model = os.getenv("GEMINI_MODEL", "")
-        self.model_names = [env_model] if env_model else []
-        self.model_names += [
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-        ]
+        default_models = ["gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+        
+        if env_model:
+            self.model_names = [env_model]
+        else:
+            self.model_names = default_models
+        
         # Deduplicate while preserving order
         seen = set()
         self.model_names = [x for x in self.model_names if not (x in seen or seen.add(x))]
