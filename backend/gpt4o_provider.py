@@ -74,9 +74,12 @@ class GPT4OProvider(BaseOCRProvider):
         
         return min(score, 1.0)
 
-    async def extract(self, image_path: str, mime_type: str = "image/png") -> OCRResult:
+    async def extract(self, image_path: str, mime_type: str = "image/png", document_type: str = None) -> OCRResult:
         start = time.time()
-        logger.info(f"GPT-4o processing: {image_path}")
+        logger.info(f"GPT-4o processing: {image_path} (type hint: {document_type})")
+        
+        from .document_types import get_prompt
+        prompt = get_prompt(document_type) if document_type else PROPERTY_EXTRACTION_PROMPT
         
         try:
             base64_image = self._encode_image(image_path)
@@ -91,7 +94,7 @@ class GPT4OProvider(BaseOCRProvider):
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": PROPERTY_EXTRACTION_PROMPT},
+                            {"type": "text", "text": prompt},
                             {
                                 "type": "image_url",
                                 "image_url": {

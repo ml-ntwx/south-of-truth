@@ -21,8 +21,14 @@ class BaseOCRProvider(ABC):
     """Base class all OCR providers must implement."""
 
     @abstractmethod
-    async def extract(self, image_path: str, mime_type: str = "image/png") -> OCRResult:
-        """Extract data from a single image."""
+    async def extract(self, image_path: str, mime_type: str = "image/png", document_type: str = None) -> OCRResult:
+        """Extract data from a single image.
+        
+        Args:
+            image_path: Path to the image file
+            mime_type: MIME type of the image (default: image/png)
+            document_type: Optional document type hint for targeted extraction
+        """
 
     @abstractmethod
     def health_check(self) -> Dict[str, Any]:

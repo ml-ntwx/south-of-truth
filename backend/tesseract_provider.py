@@ -72,7 +72,7 @@ class TesseractProvider(BaseOCRProvider):
             return match.group(1).strip()
         return ""
 
-    async def extract(self, image_path: str, mime_type: str = "image/png") -> OCRResult:
+    async def extract(self, image_path: str, mime_type: str = "image/png", document_type: str = None) -> OCRResult:
         start = time.time()
         logger.info(f"Tesseract processing: {image_path}")
 

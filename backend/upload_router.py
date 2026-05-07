@@ -8,7 +8,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime
-from fastapi import APIRouter, UploadFile, File, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,8 @@ def _init_db():
             processing_time_ms INTEGER,
             results TEXT,
             error TEXT,
-            extracted_data TEXT
+            extracted_data TEXT,
+            document_type TEXT DEFAULT 'unknown'
         )
     """)
     conn.commit()
@@ -52,8 +53,8 @@ def _save_session(session: dict):
     c.execute("""
         INSERT OR REPLACE INTO sessions
         (session_id, stage, filename, page_count, current_page, ocr_provider,
-         started_at, completed_at, processing_time_ms, results, error, extracted_data)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         started_at, completed_at, processing_time_ms, results, error, extracted_data, document_type)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         session["session_id"],
         session.get("stage", "unknown"),
@@ -66,7 +67,8 @@ def _save_session(session: dict):
         session.get("processing_time_ms", 0),
         json.dumps(session.get("results", {})),
         session.get("error"),
-        json.dumps(session.get("extracted_data", {}))
+        json.dumps(session.get("extracted_data", {})),
+        session.get("document_type", "unknown")
     ))
     conn.commit()
     conn.close()
@@ -104,11 +106,23 @@ def _get_session(session_id: str) -> dict:
 @router.post("/upload")
 async def upload_document(
     request: Request,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    document_type: str = Query(None, description="Document type hint: settlement_statement, form_2_1, contract_of_sale, certificate_of_title, section_32, trust_account_statement, final_letter"),
 ):
-    """Upload a property document and start processing."""
+    """Upload a property document and start processing.
+    
+    Optionally specify document_type to get type-specific extraction prompts.
+    Available types: settlement_statement, form_2_1, contract_of_sale, certificate_of_title, section_32, trust_account_statement, final_letter
+    """
+    from .document_types import DOCUMENT_TYPES
+    
     if not file.content_type or "pdf" not in file.content_type:
         raise HTTPException(400, "Only PDF files are accepted")
+    
+    # Validate document_type if provided
+    if document_type and document_type not in DOCUMENT_TYPES:
+        valid_types = list(DOCUMENT_TYPES.keys())
+        raise HTTPException(400, f"Unknown document_type '{document_type}'. Valid types: {valid_types}")
     
     max_size = int(os.getenv("MAX_UPLOAD_SIZE", "52428800"))
     content = await file.read()
@@ -135,7 +149,8 @@ async def upload_document(
         "started_at": datetime.utcnow().isoformat(),
         "results": {},
         "error": None,
-        "extracted_data": {}
+        "extracted_data": {},
+        "document_type": document_type or "unknown"
     }
     _save_session(session)
     
@@ -145,21 +160,25 @@ async def upload_document(
     orchestrator = PipelineOrchestrator(redis_client=redis)
     
     asyncio.create_task(
-        _run_pipeline_async(orchestrator, file_path, file.filename, session_id)
+        _run_pipeline_async(orchestrator, file_path, file.filename, session_id, document_type)
     )
+    
+    doc_type_label = DOCUMENT_TYPES.get(document_type, {}).get("label", "Unknown") if document_type else "Auto-detect"
     
     return JSONResponse({
         "session_id": session_id,
         "filename": file.filename,
         "status": "uploaded",
+        "document_type": document_type,
+        "document_type_label": doc_type_label,
         "ocr_provider": os.getenv("OCR_PROVIDER", "mock")
     })
 
 
-async def _run_pipeline_async(orchestrator, file_path, filename, session_id):
+async def _run_pipeline_async(orchestrator, file_path, filename, session_id, document_type=None):
     """Run pipeline and persist results."""
     try:
-        result = await orchestrator.run_full_pipeline(file_path, filename, session_id=session_id)
+        result = await orchestrator.run_full_pipeline(file_path, filename, session_id=session_id, document_type=document_type)
         _save_session(result)
         logger.info(f"Pipeline completed: {session_id}")
     except Exception as e:

@@ -80,8 +80,11 @@ class GeminiProvider(BaseOCRProvider):
             "package": "google.genai"
         }
 
-    async def extract(self, image_path: str, mime_type: str = "image/png") -> OCRResult:
+    async def extract(self, image_path: str, mime_type: str = "image/png", document_type: str = None) -> OCRResult:
         start = time.time()
+
+        from .document_types import get_prompt
+        base_prompt = get_prompt(document_type) if document_type else EXTRACTION_PROMPT
 
         try:
             with open(image_path, "rb") as f:
@@ -98,7 +101,7 @@ class GeminiProvider(BaseOCRProvider):
             try:
                 # Build contents as a list: prompt string + image Part
                 contents = [
-                    EXTRACTION_PROMPT,
+                    base_prompt,
                     Part.from_bytes(data=img_bytes, mime_type=mime_type),
                 ]
 

@@ -128,6 +128,7 @@ async def export_txt(session_id: str):
     e = session.get("extracted_data", {})
     v = (session.get("results") or {}).get("validation", [])
     s = (session.get("results") or {}).get("summary", {})
+    doc_type = e.get("document_type", "unknown")
     lines = []
     lines.append("=" * 60)
     lines.append("  SOUTH OF TRUTH -- PROPERTY DOCUMENT VERIFICATION REPORT")
@@ -136,38 +137,113 @@ async def export_txt(session_id: str):
     lines.append(f"  Exported:   {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     lines.append(f"  Provider:   {session.get('ocr_provider', 'unknown')}")
     lines.append(f"  Filename:   {session.get('filename', 'unknown')}")
+    lines.append(f"  Doc Type:   {doc_type}")
     lines.append("")
-    lines.append("-" * 60)
-    lines.append("  EXTRACTED DATA")
-    lines.append("-" * 60)
-    lines.append(f"  Document Type:      {e.get('document_type') or 'Not detected'}")
-    lines.append(f"  Title Reference:    {e.get('title_reference') or 'Not detected'}")
-    lines.append(f"  ABN:                {e.get('abn') or 'Not detected'}")
-    lines.append(f"  Confidence:         {(e.get('ocr_confidence') or 0) * 100:.0f}%")
-    lines.append("")
-    lines.append("  PROPRIETOR:")
-    prop = e.get("registered_proprietor", {})
-    names = prop.get("names", [])
-    lines.append(f"    Names:            {', '.join(names) if names else 'Not detected'}")
-    lines.append(f"    Address:          {prop.get('address') or 'Not detected'}")
-    lines.append(f"    Tenancy:          {prop.get('tenancy') or 'Not detected'}")
-    lines.append("")
-    lines.append("  PROPERTY:")
-    pr = e.get("property", {})
-    lines.append(f"    Address:          {pr.get('address') or 'Not detected'}")
-    lines.append(f"    Lot:              {pr.get('lot') or 'Not detected'}")
-    lines.append(f"    Plan:             {pr.get('plan') or 'Not detected'}")
-    lines.append(f"    LGA:              {pr.get('lga') or 'Not detected'}")
-    lines.append(f"    State:            {pr.get('state') or 'Not detected'}")
-    lines.append("")
-    enc = e.get("encumbrances", [])
-    if enc:
-        lines.append("  ENCUMBRANCES:")
-        for en in enc:
-            lines.append(f"    - {en.get('type', 'Unknown')}: {en.get('to', '')} ({en.get('amount', '')})")
+    
+    # ── Type-specific extraction ──────────────────────────────────
+    if doc_type == "settlement_statement":
+        lines.append("-" * 60)
+        lines.append("  SETTLEMENT STATEMENT")
+        lines.append("-" * 60)
+        for field in ["matter_number", "preparer", "preparer_abn", "property_address",
+                      "lot_plan", "vendor_name", "purchaser_name",
+                      "contract_date", "settlement_date", "adjustment_date",
+                      "water_reading_kL", "water_rate_per_kL",
+                      "land_tax", "body_corp",
+                      "deposit_amount", "balance_due", "settlement_time"]:
+            val = e.get(field, "")
+            label = field.replace("_", " ").title()
+            lines.append(f"  {label:25s} {val or 'N/A'}")
+        lines.append("")
+        
+    elif doc_type == "form_2_1":
+        lines.append("-" * 60)
+        lines.append("  FORM 2.1 — TRANSFER OF LAND")
+        lines.append("-" * 60)
+        for field in ["form_number", "lodgement_date", "processing_code",
+                      "transferor_name", "transferee_name",
+                      "title_reference", "lot_plan", "parish", "county",
+                      "consideration", "stamp_duty",
+                      "execution_date", "witness_name", "witness_occupation"]:
+            val = e.get(field, "")
+            label = field.replace("_", " ").title()
+            lines.append(f"  {label:25s} {val or 'N/A'}")
+        lines.append("")
+        
+    elif doc_type == "contract_of_sale":
+        lines.append("-" * 60)
+        lines.append("  CONTRACT OF SALE")
+        lines.append("-" * 60)
+        for field in ["vendor_name", "vendor_abn", "purchaser_name",
+                      "property_address", "lot_plan", "title_reference",
+                      "contract_date", "settlement_date",
+                      "purchase_price", "deposit_amount", "balance_amount",
+                      "inclusions", "special_conditions"]:
+            val = e.get(field, "")
+            label = field.replace("_", " ").title()
+            lines.append(f"  {label:25s} {val or 'N/A'}")
+        lines.append("")
+        
+    elif doc_type == "trust_account_statement":
+        lines.append("-" * 60)
+        lines.append("  TRUST ACCOUNT STATEMENT")
+        lines.append("-" * 60)
+        for field in ["law_practice", "abn", "client_name", "matter_reference",
+                      "property_address", "statement_date", "statement_period",
+                      "total_debits", "total_credits", "closing_balance"]:
+            val = e.get(field, "")
+            label = field.replace("_", " ").title()
+            lines.append(f"  {label:25s} {val or 'N/A'}")
+        lines.append("")
+        
+    elif doc_type == "final_letter":
+        lines.append("-" * 60)
+        lines.append("  FINAL SETTLEMENT LETTER")
+        lines.append("-" * 60)
+        for field in ["firm_name", "firm_abn", "client_name",
+                      "property_address", "matter_reference",
+                      "settlement_date", "purchase_price",
+                      "adjustments", "fees", "total_amount",
+                      "cheque_details", "keys_collection"]:
+            val = e.get(field, "")
+            label = field.replace("_", " ").title()
+            lines.append(f"  {label:25s} {val or 'N/A'}")
+        lines.append("")
+        
     else:
-        lines.append("  Encumbrances:       None detected")
-    lines.append("")
+        # Generic format (certificate_of_title, section_32, etc.)
+        lines.append("-" * 60)
+        lines.append("  EXTRACTED DATA")
+        lines.append("-" * 60)
+        lines.append(f"  Document Type:      {e.get('document_type') or 'Not detected'}")
+        lines.append(f"  Title Reference:    {e.get('title_reference') or 'Not detected'}")
+        lines.append(f"  ABN:                {e.get('abn') or 'Not detected'}")
+        lines.append(f"  Confidence:         {(e.get('ocr_confidence') or 0) * 100:.0f}%")
+        lines.append("")
+        lines.append("  PROPRIETOR:")
+        prop = e.get("registered_proprietor", {})
+        names = prop.get("names", [])
+        lines.append(f"    Names:            {', '.join(names) if names else 'Not detected'}")
+        lines.append(f"    Address:          {prop.get('address') or 'Not detected'}")
+        lines.append(f"    Tenancy:          {prop.get('tenancy') or 'Not detected'}")
+        lines.append("")
+        lines.append("  PROPERTY:")
+        pr = e.get("property", {})
+        lines.append(f"    Address:          {pr.get('address') or 'Not detected'}")
+        lines.append(f"    Lot:              {pr.get('lot') or 'Not detected'}")
+        lines.append(f"    Plan:             {pr.get('plan') or 'Not detected'}")
+        lines.append(f"    LGA:              {pr.get('lga') or 'Not detected'}")
+        lines.append(f"    State:            {pr.get('state') or 'Not detected'}")
+        lines.append("")
+        enc = e.get("encumbrances", [])
+        if enc:
+            lines.append("  ENCUMBRANCES:")
+            for en in enc:
+                lines.append(f"    - {en.get('type', 'Unknown')}: {en.get('to', '')} ({en.get('amount', '')})")
+        else:
+            lines.append("  Encumbrances:       None detected")
+        lines.append("")
+    
     lines.append("-" * 60)
     lines.append("  VALIDATION RESULTS")
     lines.append("-" * 60)

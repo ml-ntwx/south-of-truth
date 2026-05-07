@@ -104,8 +104,8 @@ class PipelineOrchestrator:
         self._store_save(session)
         return {"session": session, "image_paths": image_paths}
 
-    async def process_ocr(self, session: Dict[str, Any], image_paths: list) -> Dict[str, Any]:
-        """Stage 3: Run OCR on all pages."""
+    async def process_ocr(self, session: Dict[str, Any], image_paths: list, document_type: str = None) -> Dict[str, Any]:
+        """Stage 3: Run OCR on all pages with document type hint."""
         session["stage"] = "ocr_processing"
         self._store_save(session)
         
@@ -117,7 +117,7 @@ class PipelineOrchestrator:
         
         for idx, img_path in enumerate(image_paths):
             try:
-                result = await provider.extract(img_path, mime_type="image/png")
+                result = await provider.extract(img_path, mime_type="image/png", document_type=document_type)
                 all_results.append({
                     "page": idx + 1,
                     "provider": result.provider,
@@ -135,8 +135,21 @@ class PipelineOrchestrator:
         elapsed = int((asyncio.get_event_loop().time() - start_time) * 1000)
         session["processing_time_ms"] = elapsed
         
-        best = max(all_results, key=lambda x: x.get("confidence", 0) if "confidence" in x else 0)
-        merged_data = best.get("data", {})
+        # Try to find a page that matched the document type hint
+        if document_type:
+            for r in all_results:
+                if r.get("data", {}).get("document_type") == document_type:
+                    merged_data = r.get("data", {})
+                    logger.info(f"Used document_type match: {document_type}")
+                    break
+            else:
+                # No match found — use highest confidence
+                best = max(all_results, key=lambda x: x.get("confidence", 0) if "confidence" in x else 0)
+                merged_data = best.get("data", {})
+                logger.info(f"No document_type match for {document_type}, using best effort")
+        else:
+            best = max(all_results, key=lambda x: x.get("confidence", 0) if "confidence" in x else 0)
+            merged_data = best.get("data", {})
         
         self._store_save(session)
         return {"session": session, "ocr_results": all_results, "merged_data": merged_data}
@@ -149,18 +162,36 @@ class PipelineOrchestrator:
         return {"session": session, "extracted_data": merged_data}
 
     async def validate(self, session: Dict[str, Any], extracted_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Stage 5: Validate extracted data."""
+        """Stage 5: Validate extracted data using type-specific validators."""
         session["stage"] = "validating"
         self._store_save(session)
         
+        from .document_types import get_validator
+        document_type = session.get("document_type", "unknown")
+        validator = get_validator(document_type)
+        
+        # Run type-specific validation
+        if callable(validator):
+            type_errors = validator(extracted_data)
+        else:
+            type_errors = []
+        
+        # Run generic validation
         from .validators import validate_extracted_data
-        validation_results = validate_extracted_data(extracted_data)
+        generic_errors = validate_extracted_data(extracted_data)
+        
+        # Combine
+        validation_results = type_errors + [
+            v for v in generic_errors 
+            if not any(v["field"] == t["field"] for t in type_errors)
+        ]
         
         errors = [v for v in validation_results if v["severity"] == "error"]
         warnings = [v for v in validation_results if v["severity"] == "warning"]
         
         session["results"] = {
             "validation": validation_results,
+            "document_type": document_type,
             "summary": {
                 "total_checks": len(validation_results),
                 "errors": len(errors),
@@ -182,12 +213,21 @@ class PipelineOrchestrator:
         logger.info(f"Pipeline completed: {session['session_id']}")
         return {"session": session}
 
-    async def run_full_pipeline(self, file_path: str, filename: str, session_id: str = None) -> Dict[str, Any]:
-        """Run the complete 6-stage pipeline."""
+    async def run_full_pipeline(self, file_path: str, filename: str, session_id: str = None, document_type: str = None) -> Dict[str, Any]:
+        """Run the complete 6-stage pipeline.
+        
+        Args:
+            file_path: path to uploaded PDF
+            filename: original filename
+            session_id: optional session ID
+            document_type: settlement_statement|form_2_1|contract_of_sale|certificate_of_title|section_32|trust_account_statement|final_letter
+        """
         try:
             session = await self.initialize_session(filename, file_path, session_id=session_id)
+            session["document_type"] = document_type or "unknown"
+            self._store_save(session)
             raster = await self.rasterize(session, file_path)
-            ocr = await self.process_ocr(raster["session"], raster["image_paths"])
+            ocr = await self.process_ocr(raster["session"], raster["image_paths"], document_type=document_type)
             extract = await self.extract(ocr["session"], ocr["merged_data"])
             validate = await self.validate(extract["session"], extract["extracted_data"])
             final = await self.export(validate["session"], extract["extracted_data"])
