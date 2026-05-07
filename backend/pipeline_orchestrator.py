@@ -176,15 +176,39 @@ class PipelineOrchestrator:
         else:
             type_errors = []
         
-        # Run generic validation
+        # Generic validation only fires for unknown/unnamed types
+        # or for document types that don't have their own validator
         from .validators import validate_extracted_data
-        generic_errors = validate_extracted_data(extracted_data)
+        if document_type in ("unknown", None, ""):
+            generic_errors = validate_extracted_data(extracted_data)
+        else:
+            # For typed documents, only run generic checks that don't overlap
+            # with type-specific fields (skip registered_proprietor/property.address
+            # for documents that use vendor_name/property_address instead)
+            all_generic = validate_extracted_data(extracted_data)
+            generic_errors = []
+            # Map of generic field -> settlement_statement equivalent
+            skip_fields = {
+                "title_reference",  # not relevant for settlement statements
+                "abn",              # not always present
+                "registered_proprietor",  # use vendor_name instead
+                "property.address",  # use property_address instead
+            }
+            for g in all_generic:
+                # Only skip if the type-specific validator already handled that area
+                if g["field"] in skip_fields and type_errors:
+                    continue
+                generic_errors.append(g)
         
-        # Combine
-        validation_results = type_errors + [
-            v for v in generic_errors 
-            if not any(v["field"] == t["field"] for t in type_errors)
-        ]
+        # Combine — deduplicate by field name
+        seen_fields = {e["field"] for e in type_errors}
+        combined = list(type_errors)
+        for g in generic_errors:
+            if g["field"] not in seen_fields:
+                combined.append(g)
+                seen_fields.add(g["field"])
+        
+        validation_results = combined
         
         errors = [v for v in validation_results if v["severity"] == "error"]
         warnings = [v for v in validation_results if v["severity"] == "warning"]

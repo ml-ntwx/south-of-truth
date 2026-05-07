@@ -1,0 +1,28 @@
+2026-05-07 16:48:53,038 | backend.main | INFO | South of Truth API initialized
+INFO:     Started server process [40908]
+INFO:     Waiting for application startup.
+2026-05-07 16:48:53,081 | backend.main | INFO | Redis connected: redis://localhost:6379/0
+2026-05-07 16:48:53,081 | backend.main | INFO | OCR Providers available: ['gpt4o', 'glm_ocr', 'tesseract', 'mock', 'gemini']
+2026-05-07 16:48:53,081 | backend.main | INFO | Active OCR provider: gemini
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8004 (Press CTRL+C to quit)
+INFO:     127.0.0.1:53669 - "GET /health HTTP/1.1" 200 OK
+2026-05-07 16:49:20,850 | backend.pipeline_orchestrator | INFO | Session initialized: 74ba50e8-9f46-4eec-9af8-9b94128aeba1 for Settlement Statement - Stellar.pdf
+2026-05-07 16:49:21,527 | backend.pipeline_orchestrator | INFO | Rasterized 2 pages
+2026-05-07 16:49:21,558 | backend.gemini_provider | INFO | Gemini provider initialized. Models: ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.0-flash']
+2026-05-07 16:49:21,558 | backend.gemini_provider | INFO | Gemini processing: ./uploads/74ba50e8-9f46-4eec-9af8-9b94128aeba1_page_0.png (366 KB)
+2026-05-07 16:49:21,559 | google_genai.models | INFO | AFC is enabled with max remote calls: 10.
+2026-05-07 16:49:36,641 | httpx | INFO | HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent "HTTP/1.1 200 OK"
+2026-05-07 16:49:36,656 | backend.gemini_provider | INFO | Model gemini-flash-latest succeeded, parsed JSON
+2026-05-07 16:49:36,656 | backend.gemini_provider | INFO | Gemini done in 15097ms. Confidence: 0.99
+2026-05-07 16:49:36,658 | backend.gemini_provider | INFO | Gemini processing: ./uploads/74ba50e8-9f46-4eec-9af8-9b94128aeba1_page_1.png (163 KB)
+2026-05-07 16:49:36,658 | google_genai.models | INFO | AFC is enabled with max remote calls: 10.
+2026-05-07 16:50:19,791 | httpx | INFO | HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent "HTTP/1.1 200 OK"
+2026-05-07 16:50:19,797 | backend.gemini_provider | INFO | Model gemini-flash-latest succeeded, parsed JSON
+2026-05-07 16:50:19,798 | backend.gemini_provider | INFO | Gemini done in 43140ms. Confidence: 0.99
+2026-05-07 16:50:19,800 | backend.pipeline_orchestrator | INFO | Used document_type match: settlement_statement
+2026-05-07 16:50:19,808 | backend.pipeline_orchestrator | INFO | Pipeline completed: 74ba50e8-9f46-4eec-9af8-9b94128aeba1
+2026-05-07 16:50:19,810 | backend.upload_router | INFO | Pipeline completed: 74ba50e8-9f46-4eec-9af8-9b94128aeba1
+INFO:     127.0.0.1:53726 - "POST /upload?document_type=settlement_statement HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53998 - "GET /status/74ba50e8-9f46-4eec-9af8-9b94128aeba1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54055 - "GET /export/pdf/74ba50e8-9f46-4eec-9af8-9b94128aeba1 HTTP/1.1" 200 OK

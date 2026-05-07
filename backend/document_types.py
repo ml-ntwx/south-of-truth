@@ -313,10 +313,22 @@ def validate_settlement_statement(data: Dict[str, Any]) -> List[Dict]:
     errors = []
     if not data.get("property_address"):
         errors.append({"field": "property_address", "severity": "error", "message": "No property address found"})
+    else:
+        errors.append({"field": "property_address", "severity": "ok", "message": "Property address found"})
     if not data.get("settlement_date"):
         errors.append({"field": "settlement_date", "severity": "error", "message": "No settlement date"})
+    else:
+        errors.append({"field": "settlement_date", "severity": "ok", "message": f"Settlement: {data['settlement_date']}"})
     if data.get("matter_number"):
         errors.append({"field": "matter_number", "severity": "ok", "message": f"Matter: {data['matter_number']}"})
+    if data.get("vendor_name"):
+        errors.append({"field": "vendor_name", "severity": "ok", "message": f"Vendor: {data['vendor_name']}"})
+    if data.get("purchaser_name"):
+        errors.append({"field": "purchaser_name", "severity": "ok", "message": f"Purchaser: {data['purchaser_name']}"})
+    if data.get("deposit_amount"):
+        errors.append({"field": "deposit_amount", "severity": "ok", "message": f"Deposit: {data['deposit_amount']}"})
+    if data.get("balance_due"):
+        errors.append({"field": "balance_due", "severity": "ok", "message": f"Balance: {data['balance_due']}"})
     return errors
 
 
